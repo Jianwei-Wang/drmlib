@@ -110,7 +110,7 @@ struct device {
 		unsigned int height;
 
 		unsigned int fb_id;
-		struct bo *bo;
+		struct kms_bo *bo;
 		struct bo *cursor_bo;
 	} mode;
 };
@@ -969,7 +969,9 @@ page_flip_handler(int fd, unsigned int frame,
 	}
 }
 
-static int set_plane(struct device *dev, struct plane_arg *p)
+static int set_plane(struct device *dev, struct plane_arg *p,
+		     struct kms_driver *kms)
+
 {
 	drmModePlane *ovr;
 	uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
@@ -980,6 +982,15 @@ static int set_plane(struct device *dev, struct plane_arg *p)
 	struct crtc *crtc = NULL;
 	unsigned int pipe;
 	unsigned int i;
+
+	int ret;
+	void virtual;
+	unsigned attrs[7] = {
+	KMS_WIDTH, 1024,
+	KMS_HEIGHT, 768,
+	KMS_BO_TYPE, KMS_BO_TYPE_SCANOUT_R8G8B8,
+	KMS_TERMINATE_PROP_LIST,
+	};
 
 	/* Find an unused plane which can be connected to our CRTC. Find the
 	 * CRTC index first, then iterate over available planes.
@@ -1015,10 +1026,41 @@ static int set_plane(struct device *dev, struct plane_arg *p)
 	fprintf(stderr, "testing %dx%d@%s overlay plane %u\n",
 		p->w, p->h, p->format_str, plane_id);
 
-	plane_bo = bo_create(dev->fd, p->fourcc, p->w, p->h, handles,
-			     pitches, offsets, PATTERN_TILES);
-	if (plane_bo == NULL)
-		return -1;
+//	plane_bo = bo_create(dev->fd, p->fourcc, p->w, p->h, handles,
+//			     pitches, offsets, PATTERN_TILES);
+//	if (plane_bo == NULL)
+//		return -1;
+	switch (p->fourcc) {
+	case DRM_FORMAT_RGB888:
+		attrs[5] = KMS_BO_TYPE_SCANOUT_R8G8B8;
+		break;
+	default:
+		fprintf(stderr, "unsupported format 0x%08x\n",  format);
+		attrs[5] = KMS_BO_TYPE_SCANOUT_R8G8B8;
+	}
+	attrs[1] = p->w;
+	attrs[3] = p->h;
+	ret = kms_bo_create(kms, attrs, &plane_bo);
+	ret = kms_bo_map(plane_bo, &virtual);
+	switch (p->fourcc) {
+	case DRM_FORMAT_BGR888:
+	case DRM_FORMAT_RGB888:
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_XRGB8888:
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_XBGR8888:
+		offsets[0] = 0;
+		handles[0] = plane_bo->handle;
+		pitches[0] = plane_bo->pitch;
+		planes[0] = virtual;
+	default:
+		fprintf(stderr, "unsupported format 0x%08x\n",  format);
+		offsets[0] = 0;
+		handles[0] = plane_bo->handle;
+		pitches[0] = plane_bo->pitch;
+		planes[0] = virtual;
+		break;
+	}
 
 	p->bo = plane_bo;
 
@@ -1067,14 +1109,23 @@ static void clear_planes(struct device *dev, struct plane_arg *p, unsigned int c
 }
 
 
-static void set_mode(struct device *dev, struct pipe_arg *pipes, unsigned int count)
+static void set_mode(struct device *dev, struct pipe_arg *pipes, unsigned int count,
+		     struct kms_driver *kms)
 {
 	uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
 	unsigned int fb_id;
-	struct bo *bo;
+	struct kms_bo *bo;
 	unsigned int i;
 	unsigned int j;
 	int ret, x;
+
+	void virtual;
+	unsigned attrs[7] = {
+	KMS_WIDTH, 1024,
+	KMS_HEIGHT, 768,
+	KMS_BO_TYPE, KMS_BO_TYPE_SCANOUT_R8G8B8,
+	KMS_TERMINATE_PROP_LIST,
+	};
 
 	dev->mode.width = 0;
 	dev->mode.height = 0;
@@ -1092,10 +1143,41 @@ static void set_mode(struct device *dev, struct pipe_arg *pipes, unsigned int co
 			dev->mode.height = pipe->mode->vdisplay;
 	}
 
-	bo = bo_create(dev->fd, pipes[0].fourcc, dev->mode.width, dev->mode.height,
-		       handles, pitches, offsets, PATTERN_SMPTE);
-	if (bo == NULL)
-		return;
+//	bo = bo_create(dev->fd, pipes[0].fourcc, dev->mode.width, dev->mode.height,
+//		       handles, pitches, offsets, PATTERN_SMPTE);
+//	if (bo == NULL)
+//		return;
+	switch (pipes[0].fourcc) {
+	case DRM_FORMAT_RGB888:
+		attrs[5] = KMS_BO_TYPE_SCANOUT_R8G8B8;
+		break;
+	default:
+		fprintf(stderr, "unsupported format 0x%08x\n",  format);
+		attrs[5] = KMS_BO_TYPE_SCANOUT_R8G8B8;
+	}
+	attrs[1] = p->w;
+	attrs[3] = p->h;
+	ret = kms_bo_create(kms, attrs, &bo);
+	ret = kms_bo_map(bo, &virtual);
+	switch (pipes[0].fourcc) {
+	case DRM_FORMAT_BGR888:
+	case DRM_FORMAT_RGB888:
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_XRGB8888:
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_XBGR8888:
+		offsets[0] = 0;
+		handles[0] = bo->handle;
+		pitches[0] = bo->pitch;
+		planes[0] = virtual;
+	default:
+		fprintf(stderr, "unsupported format 0x%08x\n",  format);
+		offsets[0] = 0;
+		handles[0] = bo->handle;
+		pitches[0] = bo->pitch;
+		planes[0] = virtual;
+		break;
+	}
 
 	dev->mode.bo = bo;
 
@@ -1146,13 +1228,15 @@ static void clear_mode(struct device *dev)
 		bo_destroy(dev->mode.bo);
 }
 
-static void set_planes(struct device *dev, struct plane_arg *p, unsigned int count)
+static void set_planes(struct device *dev, struct plane_arg *p, unsigned int count,
+		       struct kms_driver *kms)
+
 {
 	unsigned int i;
 
 	/* set up planes/overlays */
 	for (i = 0; i < count; i++)
-		if (set_plane(dev, &p[i]))
+		if (set_plane(dev, &p[i], kms))
 			return;
 }
 
@@ -1505,6 +1589,7 @@ int main(int argc, char **argv)
 	struct property_arg *prop_args = NULL;
 	unsigned int args = 0;
 	int ret;
+	struct kms_driver *kms;
 
 	memset(&dev, 0, sizeof dev);
 
@@ -1617,6 +1702,8 @@ int main(int argc, char **argv)
 		}
 	}
 
+	ret = kms_create(fd, &kms);
+
 	if (test_vsync && !page_flipping_supported()) {
 		fprintf(stderr, "page flipping not supported by drm.\n");
 		return -1;
@@ -1659,10 +1746,10 @@ int main(int argc, char **argv)
 		}
 
 		if (count)
-			set_mode(&dev, pipe_args, count);
+			set_mode(&dev, pipe_args, count, kms);
 
 		if (plane_count)
-			set_planes(&dev, plane_args, plane_count);
+			set_planes(&dev, plane_args, plane_count, kms);
 
 		if (test_cursor)
 			set_cursors(&dev, pipe_args, count);

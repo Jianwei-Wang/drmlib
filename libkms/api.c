@@ -67,7 +67,7 @@ int kms_bo_create(struct kms_driver *kms, const unsigned *attr, struct kms_bo **
 {
 	unsigned width = 0;
 	unsigned height = 0;
-	enum kms_bo_type type = KMS_BO_TYPE_SCANOUT_X8R8G8B8;
+	enum kms_bo_type type = KMS_BO_TYPE_SCANOUT_R8G8B8;
 	int i;
 
 	for (i = 0; attr[i];) {

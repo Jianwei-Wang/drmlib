@@ -57,6 +57,7 @@ static int test_bo(struct kms_driver *kms)
 }
 
 static const char *drivers[] = {
+	"fsl-dcu-drm"
 	"i915",
 	"radeon",
 	"nouveau",
