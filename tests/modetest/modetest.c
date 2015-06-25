@@ -54,10 +54,13 @@
 #include <errno.h>
 #include <sys/poll.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 #include "xf86drm.h"
 #include "xf86drmMode.h"
 #include "drm_fourcc.h"
+#include "libkms.h"
+#include "internal.h"
 
 #include "buffers.h"
 #include "cursor.h"
@@ -114,6 +117,8 @@ struct device {
 		struct bo *cursor_bo;
 	} mode;
 };
+
+extern void Read_PictureData(unsigned char *pic_name, unsigned char **pColorData);
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 static inline int64_t U642I64(uint64_t val)
@@ -737,7 +742,7 @@ struct plane_arg {
 	uint32_t w, h;
 	double scale;
 	unsigned int fb_id;
-	struct bo *bo;
+	struct kms_bo *bo;
 	char format_str[5]; /* need to leave room for terminating \0 */
 	unsigned int fourcc;
 };
@@ -976,21 +981,28 @@ static int set_plane(struct device *dev, struct plane_arg *p,
 	drmModePlane *ovr;
 	uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
 	uint32_t plane_id = 0;
-	struct bo *plane_bo;
+	struct kms_bo *plane_bo;
 	uint32_t plane_flags = 0;
 	int crtc_x, crtc_y, crtc_w, crtc_h;
 	struct crtc *crtc = NULL;
 	unsigned int pipe;
 	unsigned int i;
 
-	int ret;
-	void virtual;
+	unsigned char *pColorData;
+	void *planes[3] = { 0, };
+	int ret, j;
+	void *virtual;
 	unsigned attrs[7] = {
 	KMS_WIDTH, 1024,
 	KMS_HEIGHT, 768,
 	KMS_BO_TYPE, KMS_BO_TYPE_SCANOUT_R8G8B8,
 	KMS_TERMINATE_PROP_LIST,
 	};
+	struct timeval startTime, endTime;
+	long secsDiff = 0; 
+	char pic[15];
+	char resoulation[15];
+	int blank_num = 0;
 
 	/* Find an unused plane which can be connected to our CRTC. Find the
 	 * CRTC index first, then iterate over available planes.
@@ -1032,10 +1044,11 @@ static int set_plane(struct device *dev, struct plane_arg *p,
 //		return -1;
 	switch (p->fourcc) {
 	case DRM_FORMAT_RGB888:
+	case DRM_FORMAT_BGR888:
 		attrs[5] = KMS_BO_TYPE_SCANOUT_R8G8B8;
 		break;
 	default:
-		fprintf(stderr, "unsupported format 0x%08x\n",  format);
+		fprintf(stderr, "unsupported format 0x%08x\n",  p->fourcc);
 		attrs[5] = KMS_BO_TYPE_SCANOUT_R8G8B8;
 	}
 	attrs[1] = p->w;
@@ -1053,8 +1066,9 @@ static int set_plane(struct device *dev, struct plane_arg *p,
 		handles[0] = plane_bo->handle;
 		pitches[0] = plane_bo->pitch;
 		planes[0] = virtual;
+		break;
 	default:
-		fprintf(stderr, "unsupported format 0x%08x\n",  format);
+		fprintf(stderr, "unsupported format 0x%08x\n",  p->fourcc);
 		offsets[0] = 0;
 		handles[0] = plane_bo->handle;
 		pitches[0] = plane_bo->pitch;
@@ -1093,6 +1107,37 @@ static int set_plane(struct device *dev, struct plane_arg *p,
 
 	ovr->crtc_id = crtc->crtc->crtc_id;
 
+#define REDO 10
+#define LOOPNUM 9
+	printf("testing %dx%d@%s\n", p->w, p->h, p->format_str);
+	printf ("\tAverage: (usecs)");
+	printf ("\tBandwidth: (MByte/Sec)");
+	printf ("\tMax. FPS: (fps)\n\n");
+	for(j = 0; j < REDO; j++)
+	{
+		for(i = 0; i < LOOPNUM; i++)
+		{
+			sprintf(pic, "%d-%dx%d.bmp", i+1, p->w, p->h);
+			Read_PictureData(pic, &pColorData);
+			gettimeofday (&startTime, NULL);
+			memcpy (virtual, pColorData, p->w*p->h*3);
+			gettimeofday (&endTime, NULL);
+			secsDiff += (endTime.tv_sec - startTime.tv_sec)*1000000;
+			secsDiff += (endTime.tv_usec - startTime.tv_usec);
+			usleep(100000);
+	
+		}
+		secsDiff /= LOOPNUM;
+		
+		printf ("\t%d", secsDiff);
+		printf ("\t \t \t%.03f",
+			(p->w*p->h*3 / 1048576.0) / ((double) secsDiff / 1000000.0));
+		printf ("\t \t \t%.03f\n",
+			1000000.0 / (double) secsDiff);
+		secsDiff = 0;
+	}
+
+	free(pColorData);
 	return 0;
 }
 
@@ -1104,7 +1149,7 @@ static void clear_planes(struct device *dev, struct plane_arg *p, unsigned int c
 		if (p[i].fb_id)
 			drmModeRmFB(dev->fd, p[i].fb_id);
 		if (p[i].bo)
-			bo_destroy(p[i].bo);
+			kms_bo_destroy(&p[i].bo);
 	}
 }
 
@@ -1119,7 +1164,9 @@ static void set_mode(struct device *dev, struct pipe_arg *pipes, unsigned int co
 	unsigned int j;
 	int ret, x;
 
-	void virtual;
+	unsigned char *pColorData;
+	void *planes[3] = { 0, };
+	void *virtual;
 	unsigned attrs[7] = {
 	KMS_WIDTH, 1024,
 	KMS_HEIGHT, 768,
@@ -1152,11 +1199,11 @@ static void set_mode(struct device *dev, struct pipe_arg *pipes, unsigned int co
 		attrs[5] = KMS_BO_TYPE_SCANOUT_R8G8B8;
 		break;
 	default:
-		fprintf(stderr, "unsupported format 0x%08x\n",  format);
+		fprintf(stderr, "unsupported format 0x%08x\n",  pipes[0].fourcc);
 		attrs[5] = KMS_BO_TYPE_SCANOUT_R8G8B8;
 	}
-	attrs[1] = p->w;
-	attrs[3] = p->h;
+	attrs[1] = dev->mode.width;
+	attrs[3] = dev->mode.height;
 	ret = kms_bo_create(kms, attrs, &bo);
 	ret = kms_bo_map(bo, &virtual);
 	switch (pipes[0].fourcc) {
@@ -1171,7 +1218,7 @@ static void set_mode(struct device *dev, struct pipe_arg *pipes, unsigned int co
 		pitches[0] = bo->pitch;
 		planes[0] = virtual;
 	default:
-		fprintf(stderr, "unsupported format 0x%08x\n",  format);
+		fprintf(stderr, "unsupported format 0x%08x\n",  pipes[0].fourcc);
 		offsets[0] = 0;
 		handles[0] = bo->handle;
 		pitches[0] = bo->pitch;
@@ -1218,6 +1265,9 @@ static void set_mode(struct device *dev, struct pipe_arg *pipes, unsigned int co
 			return;
 		}
 	}
+	Read_PictureData("hdmi01.bmp", &pColorData);
+	memcpy (virtual, pColorData, 640*480*3);
+	free(pColorData);
 }
 
 static void clear_mode(struct device *dev)
@@ -1225,7 +1275,7 @@ static void clear_mode(struct device *dev)
 	if (dev->mode.fb_id)
 		drmModeRmFB(dev->fd, dev->mode.fb_id);
 	if (dev->mode.bo)
-		bo_destroy(dev->mode.bo);
+		kms_bo_destroy(&dev->mode.bo);
 }
 
 static void set_planes(struct device *dev, struct plane_arg *p, unsigned int count,
@@ -1578,7 +1628,7 @@ int main(int argc, char **argv)
 	int drop_master = 0;
 	int test_vsync = 0;
 	int test_cursor = 0;
-	const char *modules[] = { "i915", "radeon", "nouveau", "vmwgfx", "omapdrm", "exynos", "tilcdc", "msm", "sti", "tegra", "imx-drm", "rockchip" };
+	const char *modules[] = { "fsl-dcu-drm", "i915", "radeon", "nouveau", "vmwgfx", "omapdrm", "exynos", "tilcdc", "msm", "sti", "tegra", "imx-drm", "rockchip" };
 	char *device = NULL;
 	char *module = NULL;
 	unsigned int i;
@@ -1702,7 +1752,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	ret = kms_create(fd, &kms);
+	ret = kms_create(dev.fd, &kms);
 
 	if (test_vsync && !page_flipping_supported()) {
 		fprintf(stderr, "page flipping not supported by drm.\n");
@@ -1760,7 +1810,7 @@ int main(int argc, char **argv)
 		if (drop_master)
 			drmDropMaster(dev.fd);
 
-		getchar();
+//		getchar();
 
 		if (test_cursor)
 			clear_cursors(&dev);

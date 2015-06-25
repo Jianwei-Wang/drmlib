@@ -426,7 +426,7 @@ wait_for_udev:
  * Calls drmOpenDevice() if \p create is set, otherwise assembles the device
  * name from \p minor and opens it.
  */
-static int drmOpenMinor(int minor, int create, int type)
+int drmOpenMinor(int minor, int create, int type)
 {
     int  fd;
     char buf[64];

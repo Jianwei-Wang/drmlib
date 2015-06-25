@@ -1,4 +1,5 @@
 MODETEST_FILES := \
+	bmp_parse.c \
 	buffers.c \
 	buffers.h \
 	cursor.c \

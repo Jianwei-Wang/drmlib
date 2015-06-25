@@ -74,25 +74,32 @@ int drm_open_matching(const char *pci_glob, int flags)
 	fd = -1;
 	e = udev_enumerate_new(udev);
 	udev_enumerate_add_match_subsystem(e, "drm");
-        udev_enumerate_scan_devices(e);
-        udev_list_entry_foreach(entry, udev_enumerate_get_list_entry(e)) {
+	udev_enumerate_scan_devices(e);
+	udev_list_entry_foreach(entry, udev_enumerate_get_list_entry(e)) {
+		printf("udev_list_entry_foreach\n");
 		path = udev_list_entry_get_name(entry);
+		printf("path = %s\n",path);
 		device = udev_device_new_from_syspath(udev, path);
 		parent = udev_device_get_parent(device);
 		usub = udev_device_get_subsystem(parent);
+		printf("usub = %s\n",usub);
 		/* Filter out KMS output devices. */
 		if (!usub || (strcmp(usub, "pci") != 0))
 			continue;
 		pci_id = udev_device_get_property_value(parent, "PCI_ID");
+		printf("pci_id = %s\n",pci_id);
 		if (fnmatch(pci_glob, pci_id, 0) != 0)
 			continue;
 		dnode = udev_device_get_devnode(device);
+		printf("dnode = %s\n",dnode);
 		if (strstr(dnode, "control"))
 			continue;
 		fd = open(dnode, O_RDWR);
+		printf("fd = %d\n",fd);
 		if (fd < 0)
 			continue;
 		if ((flags & DRM_TEST_MASTER) && !is_master(fd)) {
+			printf("is_master\n");
 			close(fd);
 			fd = -1;
 			continue;
